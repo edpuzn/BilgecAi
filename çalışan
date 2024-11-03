@@ -1,0 +1,184 @@
+
+search.go
+package cmd
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings" // import strings package
+
+	"github.com/google/generative-ai-go/genai"
+	"github.com/spf13/cobra"
+	"google.golang.org/api/option"
+)
+
+var searchCmd = &cobra.Command{
+	Use:   "search",
+	Short: "A brief description of your command",
+	Args:  cobra.MinimumNArgs(1), // Minimum 1 arg required
+	Run: func(cmd *cobra.Command, args []string) {
+		GetResponse(args)
+	},
+}
+
+func init() {
+	rootCmd.AddCommand(searchCmd)
+}
+
+func GetResponse(args []string) []string {
+	// Gelen argümanları bir cümle haline getiriyoruz
+	userArgs := strings.Join(args[0:], " ")
+
+	// Google AI client'ını başlat
+	ctx := context.Background()
+	client, err := genai.NewClient(ctx, option.WithAPIKey("AIzaSyBH1eRQOST8okTjs3la9uNn8q9Fk9_cJYQ"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer client.Close()
+
+	// Modeli seç ve kullanıcının sorusunu işleme koy
+	model := client.GenerativeModel("gemini-1.5-flash")
+	resp, err := model.GenerateContent(ctx, genai.Text(userArgs))
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// İlk adayı alıyoruz ve `Part` içeriğini elde ediyoruz
+	if len(resp.Candidates) > 0 {
+		firstPart := resp.Candidates[0].Content.Parts[0]
+
+		// Type assertion kullanarak `firstPart`'ın `Text` tipi olup olmadığını kontrol edelim
+		if text, ok := firstPart.(genai.Text); ok {
+			generatedText := string(text)                 // Text türünü string'e dönüştürüyoruz
+			fmt.Println("Generated Text:", generatedText) // Terminalde görmek için log ekle
+			return []string{generatedText}                // Yanıtı dilim olarak döndür
+		}
+
+		// Eğer `Part` tipi `Text` değilse
+		log.Println("Unsupported Part type. Only Text type is supported.")
+		return []string{"Desteklenmeyen içerik türü, sadece metin destekleniyor."}
+	}
+
+	// Eğer hiçbir aday yoksa, bu durumu da işleyelim
+	return []string{"Bir şeyler ters gitti, lütfen tekrar deneyin."}
+}
+
+
+root.go
+
+/*
+Copyright © 2024 NAME HERE <EMAIL ADDRESS>
+*/
+package cmd
+
+import (
+	"os"
+
+	"github.com/spf13/cobra"
+)
+
+// rootCmd represents the base command when called without any subcommands
+var rootCmd = &cobra.Command{
+	Use:   "Hackathon",
+	Short: "A brief description of your application",
+	Long: `A longer description that spans multiple lines and likely contains
+examples and usage of using your application. For example:
+
+Cobra is a CLI library for Go that empowers applications.
+This application is a tool to generate the needed files
+to quickly create a Cobra application.`,
+	// Uncomment the following line if your bare application
+	// has an action associated with it:
+	// Run: func(cmd *cobra.Command, args []string) { },
+}
+
+// Execute adds all child commands to the root command and sets flags appropriately.
+// This is called by main.main(). It only needs to happen once to the rootCmd.
+func Execute() {
+	err := rootCmd.Execute()
+	if err != nil {
+		os.Exit(1)
+	}
+}
+
+func init() {
+	// Here you will define your flags and configuration settings.
+	// Cobra supports persistent flags, which, if defined here,
+	// will be global for your application.
+
+	// rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.Hackathon.yaml)")
+
+	// Cobra also supports local flags, which will only run
+	// when this action is called directly.
+	rootCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
+}
+
+main.go
+
+package main
+
+import (
+	"encoding/json"
+	"github.com/edpuzn/HackAthon/cmd"
+	"log"
+	"net/http"
+)
+
+type RequestBody struct {
+	Query string `json:"query"`
+}
+
+func searchHandler(w http.ResponseWriter, r *http.Request) {
+	// CORS başlıklarını ekle
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+
+	// Preflight isteğini yönet (OPTIONS istekleri)
+	if r.Method == http.MethodOptions {
+		// Eğer istek OPTIONS ise, `StatusOK` dönerek preflight isteğini yanıtla
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	// Sadece POST isteğine izin ver
+	if r.Method != http.MethodPost {
+		http.Error(w, "Invalid request method", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Kullanıcıdan gelen POST isteğini işleme
+	var reqBody RequestBody
+	if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	// Kullanıcıdan gelen sorguyu al ve işleme yap
+	responses := cmd.GetResponse([]string{reqBody.Query}) // Burada search.go'daki fonksiyon çağrılıyor.
+
+	// Yanıtı JSON olarak frontend'e döndür
+	w.Header().Set("Content-Type", "application/json")
+
+	// Gelen yanıt bir dilim olduğundan, JSON formatında döndürülecek şekilde ayarlıyoruz
+	jsonResponse := map[string][]string{
+		"results": responses,
+	}
+
+	// Yanıtı terminalde görmek için bir log ekle
+	log.Println("Yanıt gönderiliyor:", jsonResponse)
+
+	// JSON yanıtını frontend'e gönder
+	if err := json.NewEncoder(w).Encode(jsonResponse); err != nil {
+		http.Error(w, "Unable to encode response", http.StatusInternalServerError)
+		return
+	}
+}
+
+func main() {
+	http.HandleFunc("/api/search", searchHandler)
+	log.Println("Server started at :8080")
+	log.Fatal(http.ListenAndServe(":8080", nil))
+}
